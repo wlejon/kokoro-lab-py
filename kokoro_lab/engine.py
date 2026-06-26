@@ -155,6 +155,48 @@ class KokoroLab:
         )
         return audio_np, tr, ctx
 
+    # ───────────────────────── general re-decode (any timing + contours) ─────────────────────────
+    @torch.no_grad()
+    def decode_full(self, ctx: DecodeContext, dur, f0, n) -> np.ndarray:
+        """Re-decode from an arbitrary per-phoneme duration set and F0/N contours.
+        Length-regulates t_en onto `dur` (→ asr), then runs the decoder. `f0`/`n`
+        must be length 2·sum(dur). This is the one path used for every edit —
+        curve draws (dur unchanged) and re-timing alike."""
+        dev = self.device
+        dur_t = torch.as_tensor(np.asarray(dur).ravel().astype("int64"), device=dev).clamp(min=1)
+        aln = self._alignment(ctx.input_ids.shape[1], dur_t, dev)
+        asr = ctx.t_en @ aln
+        f0t = torch.as_tensor(np.asarray(f0, np.float32).ravel(), device=dev).reshape(1, -1)
+        nt = torch.as_tensor(np.asarray(n, np.float32).ravel(), device=dev).reshape(1, -1)
+        audio = self.model.decoder(asr, f0t, nt, ctx.ref_dec).squeeze()
+        return audio.float().cpu().numpy()
+
+    @staticmethod
+    def resample_by_dur(src, src_dur, dst_dur) -> np.ndarray:
+        """Resample a frame-rate contour from one per-phoneme duration set to
+        another, preserving each phoneme's contour SHAPE while restretching its
+        time span. `src` is at 2× frame rate (len 2·sum(src_dur)); returns length
+        2·sum(dst_dur). Port of kokoro-lab/lib/edit.js resampleByDur."""
+        src = np.asarray(src, np.float32).ravel()
+        src_dur = np.asarray(src_dur).astype(int).ravel()
+        dst_dur = np.asarray(dst_dur).astype(int).ravel()
+        dst = np.zeros(2 * int(dst_dur.sum()), np.float32)
+        s_off = d_off = 0
+        for l in range(len(src_dur)):
+            s_len, d_len = 2 * int(src_dur[l]), 2 * int(dst_dur[l])
+            s0, d0 = 2 * s_off, 2 * d_off
+            if s_len > 0 and d_len > 0:
+                if d_len == 1:
+                    dst[d0] = src[s0]
+                else:
+                    sp = (np.arange(d_len) / (d_len - 1)) * (s_len - 1)
+                    i0 = np.floor(sp).astype(int)
+                    i1 = np.minimum(s_len - 1, i0 + 1)
+                    fr = sp - i0
+                    dst[d0:d0 + d_len] = src[s0 + i0] * (1 - fr) + src[s0 + i1] * fr
+            s_off += int(src_dur[l]); d_off += int(dst_dur[l])
+        return dst
+
     # ───────────────────────── decode-from-stage ─────────────────────────
     @torch.no_grad()
     def decode(self, ctx: DecodeContext, f0: Optional[torch.Tensor] = None,

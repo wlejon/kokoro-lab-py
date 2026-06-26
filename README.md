@@ -53,6 +53,13 @@ Validated against real Kokoro-82M weights (CUDA):
   changed audio).
 - ✅ Parametric emotion: arousal↑ retimes faster (fewer samples), arousal↓
   slower — retime + re-decode.
+- ✅ Drawable control surfaces (in-browser, verified): paint F0 (pitch), N
+  (energy), and pred_dur (per-phoneme timing); each stroke re-decodes just the
+  back-half.
+- ✅ Pinned prosody: a manual reshape is stored as a delta from the baseline and
+  re-applied on every change, so it rides onto a different voice. Voice / VAD /
+  masc-fem / speed all change the baseline and **compose** with the manual edit
+  rather than resetting it.
 
 ## Setup
 
@@ -87,7 +94,8 @@ kokoro_lab/
   voicespace.py   # Layer A: basis math + offsets + clone (NumPy, no model)
   emotion.py      # Layer A: VAD → prosody transforms
   engine.py       # Layer B: staged KModel forward + trace + decode-from
-app.py            # Gradio UI (design sliders, trace plots, emotion re-decode)
+app.py            # Gradio UI: design sliders, drawable F0/N/dur surfaces,
+                  #   VAD emotion, pinned-prosody composition
 tests/smoke.py    # offline + engine smoke tests
 ```
 
@@ -95,8 +103,5 @@ tests/smoke.py    # offline + engine smoke tests
 
 - `gen_in` / `har` trace stages (decoder-internal) — need a forward hook on the
   iSTFTNet decoder; the rest of the trace is captured.
-- Drag-to-edit F0/energy/timing curves — the *re-decode plumbing* is done
-  (`engine.decode` / `engine.retime`); only an interactive editor is missing.
-  The VAD panel exercises the same path parametrically.
 - Clone is wired in `voicespace.style_from_ecapa`, but enrolling a clip needs an
   ECAPA speaker encoder (the JS lab uses the standalone ~18 MB artifact).
