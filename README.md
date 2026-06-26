@@ -105,3 +105,8 @@ tests/smoke.py    # offline + engine smoke tests
   iSTFTNet decoder; the rest of the trace is captured.
 - Clone is wired in `voicespace.style_from_ecapa`, but enrolling a clip needs an
   ECAPA speaker encoder (the JS lab uses the standalone ~18 MB artifact).
+
+## License
+
+MIT — see [LICENSE](LICENSE). This repo ships no model weights or basis
+artifacts; those load from `brosoundml-data` and carry their own attribution.
