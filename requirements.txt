@@ -1,0 +1,5 @@
+kokoro>=0.7.16
+torch
+numpy
+gradio>=4.0
+matplotlib
