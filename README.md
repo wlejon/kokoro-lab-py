@@ -6,6 +6,8 @@ synthesis pipeline take shape stage by stage**, and **reshape its prosody by
 drawing** on the pitch, energy, and timing contours — each stroke re-synthesizes
 in place.
 
+![kokoro-lab-py](docs/ui.png)
+
 ## What you can do
 
 - **Design a voice** with sliders over the principal axes of Kokoro's style
