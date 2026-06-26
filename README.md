@@ -1,112 +1,120 @@
 # kokoro-lab-py
 
-A small, faithful Python reproduction of broworkshop's **kokoro-lab** — built on
-the upstream [`kokoro`](https://github.com/hexgrad/kokoro) pip package instead of
-the bro/brosoundml C++ runtime.
+An interactive lab for the [Kokoro-82M](https://github.com/hexgrad/kokoro)
+text-to-speech model. Design a voice in Kokoro's style space, **watch the
+synthesis pipeline take shape stage by stage**, and **reshape its prosody by
+drawing** on the pitch, energy, and timing contours — each stroke re-synthesizes
+in place.
 
-Design a voice in Kokoro's style space, **watch the synthesis pipeline take shape
-stage by stage**, and reshape its prosody (parametric VAD emotion) with a
-re-decode of just the decoder back-half.
+## What you can do
 
-This is the Python leg of the plan to surface the kokoro-lab controls outside
-bro; the in-browser (GitHub Pages) leg builds on the same shared math plus a
-split-ONNX export.
+- **Design a voice** with sliders over the principal axes of Kokoro's style
+  space (pitch, brightness, pace, …, plus character axes), seed from a stock
+  voice, or roll a random one.
+- **Nudge timbre** along a masc↔fem axis and per-emotion directions.
+- **Steer emotion** with valence / arousal / dominance — a parametric transform
+  of pitch register/range, energy, and speaking rate.
+- **Draw the prosody**: paint the F0 (pitch), N (energy), and per-phoneme
+  duration contours directly. Only the decoder back-half re-runs, so edits are
+  fast.
+- **Edits compose and persist**: a manual reshape is kept as a delta and
+  re-applied as you change the voice, emotion, masc-fem, or speed — it rides
+  along instead of resetting.
 
-## The idea: the lab is two layers, and only one needs the model
+Everything re-renders on change; there is no render button.
 
-Everything kokoro-lab does splits cleanly, and this repo keeps the split:
+## Setup
 
-**Layer A — pure NumPy over tiny artifacts (no model).** This is the bulk of the
-"controls", and it's just linear algebra over four files that ship next to the
-model in `brosoundml-data/kokoro/`:
+> **Use Python 3.10–3.12.** Kokoro's grapheme-to-phoneme stack (misaki → spacy)
+> has no wheels for Python 3.13+ yet.
 
-| Artifact | Control | Math (`kokoro_lab/voicespace.py`) |
+```bash
+# create the environment (uv recommended; venv/pip works too)
+uv venv --python 3.12 .venv
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+```
+
+`torch` installs the CPU build by default — fine for an 82M model. For GPU,
+install a CUDA `torch` build from the [PyTorch index](https://pytorch.org/get-started/locally/).
+
+### Get the voice-space data
+
+The slider basis and the timbre / masc-fem / clone artifacts live in the
+[`wlejon/brosoundml-data`](https://huggingface.co/datasets/wlejon/brosoundml-data)
+dataset on Hugging Face. Download the `kokoro/` folder and point the app at it:
+
+```bash
+huggingface-cli download wlejon/brosoundml-data --repo-type dataset \
+    --include "kokoro/*" --local-dir ./data
+
+export KOKORO_LAB_DATA=$PWD/data/kokoro     # PowerShell: $env:KOKORO_LAB_DATA = "$PWD/data/kokoro"
+```
+
+Only `voice_basis.json` is required; `emotion_basis.json`, `masc_fem_basis.json`,
+and `voice_bridge.bin` are optional (their panels hide if absent). The Kokoro-82M
+model weights themselves download automatically from Hugging Face on first run.
+
+## Run
+
+```bash
+.venv/Scripts/python app.py                    # the Gradio lab
+.venv/Scripts/python tests/smoke.py            # offline voice-space checks
+.venv/Scripts/python tests/smoke.py --engine   # + load model, forward, decode-from
+```
+
+The app prints a local URL (default http://127.0.0.1:7860).
+
+## How it works
+
+The lab is two layers, and only one of them needs the model.
+
+**Voice-space math — pure NumPy, no model** (`kokoro_lab/voicespace.py`,
+`emotion.py`). Every control is linear algebra over a few small artifacts:
+
+| Artifact | Control | Math |
 |---|---|---|
 | `voice_basis.json` | the σ-axis **design sliders**, seeds, random | `style = mean + Σ coordsᵢ·stdᵢ·compsᵢ` |
 | `emotion_basis.json` | **timbre** offset (per-emotion direction) | `style += Σ αₑ·fullₑ` |
 | `masc_fem_basis.json` | the **masc↔fem** axis | `style += α·full.M` |
 | `voice_bridge.bin` | **clone** an ECAPA embedding into the space | `style = ym + (x−xm)·B` |
 
-Plus the **VAD emotion** panel (`kokoro_lab/emotion.py`) — pitch register/range,
-energy, and rate as closed-form transforms of the predictor's own contours. No
-model, no training.
+The VAD emotion panel is closed-form transforms of the predictor's own
+pitch/energy/duration contours — no model, no training.
 
-**Layer B — the staged Kokoro forward (`kokoro_lab/engine.py`).** A step-by-step
-reimplementation of `KModel.forward_with_tokens` that, unlike the stock one-shot
-forward:
+**The staged engine** (`kokoro_lab/engine.py`) runs Kokoro's forward pass step by
+step so it can, unlike a one-shot call:
 
-- captures every intermediate as a named **trace** stage
+- capture every intermediate as a named **trace** stage
   (`bert_dur → d_en → t_en → pred_dur → F0_pred / N_pred → asr → audio`), and
-- hands back a `DecodeContext` so the decoder back-half can be **re-decoded from
-  edited prosody** (F0 / energy / duration) without re-running the front-end —
-  i.e. brosoundml's `prepare_decode_context` + `decode_from`.
+- **re-decode just the back-half** from edited prosody (F0 / energy / duration)
+  without re-running the front-end — this is what makes drawing on the contours
+  cheap.
 
-## Status
+Edits are stored as a delta from the model's own prediction (a per-phoneme
+duration ratio plus additive pitch/energy deltas), so they survive a change of
+voice, emotion, masc-fem, or speed.
 
-Validated against real Kokoro-82M weights (CUDA):
-
-- ✅ Voice-space layer (offline): basis load, `coords↔style` round-trip,
-  anchors, random, masc/fem + timbre offsets, clone bridge.
-- ✅ Staged forward: all trace stages with correct shapes
-  (e.g. 22 phonemes → `asr` 512×91, `F0_pred`/`N_pred` 182 = 2·91, 2.27 s audio).
-- ✅ Decode-from-stage: editing energy re-decodes the back-half (same length,
-  changed audio).
-- ✅ Parametric emotion: arousal↑ retimes faster (fewer samples), arousal↓
-  slower — retime + re-decode.
-- ✅ Drawable control surfaces (in-browser, verified): paint F0 (pitch), N
-  (energy), and pred_dur (per-phoneme timing); each stroke re-decodes just the
-  back-half.
-- ✅ Pinned prosody: a manual reshape is stored as a delta from the baseline and
-  re-applied on every change, so it rides onto a different voice. Voice / VAD /
-  masc-fem / speed all change the baseline and **compose** with the manual edit
-  rather than resetting it.
-
-## Setup
-
-> **Python version matters.** `kokoro`'s g2p (misaki → spacy → thinc) has no
-> wheels for Python 3.14 yet and won't compile there. Use **3.10–3.12**.
-
-```bash
-# with uv (recommended)
-uv venv --python 3.12 .venv
-uv pip install --python .venv/Scripts/python.exe -r requirements.txt
-
-# point at your brosoundml-data/kokoro dir if it isn't auto-found
-export KOKORO_LAB_DATA=/path/to/brosoundml-data/kokoro   # PowerShell: $env:KOKORO_LAB_DATA=...
-```
-
-The Kokoro-82M weights download from Hugging Face on first run. `torch` installs
-the CPU build by default (plenty for an 82M model); for GPU, install a CUDA
-`torch` build from the PyTorch index.
-
-## Run
-
-```bash
-.venv/Scripts/python app.py          # Gradio UI
-.venv/Scripts/python tests/smoke.py            # offline voice-space checks
-.venv/Scripts/python tests/smoke.py --engine   # + load model, forward, decode-from
-```
-
-## Layout
+## Project layout
 
 ```
 kokoro_lab/
-  voicespace.py   # Layer A: basis math + offsets + clone (NumPy, no model)
-  emotion.py      # Layer A: VAD → prosody transforms
-  engine.py       # Layer B: staged KModel forward + trace + decode-from
+  voicespace.py   # basis math + timbre/masc-fem offsets + clone (NumPy)
+  emotion.py      # VAD → prosody transforms
+  engine.py       # staged Kokoro forward + trace + decode-from-stage
 app.py            # Gradio UI: design sliders, drawable F0/N/dur surfaces,
-                  #   VAD emotion, pinned-prosody composition
+                  #   VAD emotion, composable pinned-prosody edits
 tests/smoke.py    # offline + engine smoke tests
 ```
 
-## Not yet ported (vs the JS lab)
+## Limitations
 
-- `gen_in` / `har` trace stages (decoder-internal) — need a forward hook on the
-  iSTFTNet decoder; the rest of the trace is captured.
-- Clone is wired in `voicespace.style_from_ecapa`, but enrolling a clip needs an
-  ECAPA speaker encoder (the JS lab uses the standalone ~18 MB artifact).
+- The decoder-internal trace stages (`gen_in`, `har`) aren't surfaced yet; the
+  rest of the pipeline trace is.
+- Cloning a real clip into the style space is wired in
+  (`voicespace.style_from_ecapa`) but needs an ECAPA speaker encoder to produce
+  the embedding; the lab does not bundle one.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). This repo ships no model weights or basis
-artifacts; those load from `brosoundml-data` and carry their own attribution.
+MIT — see [LICENSE](LICENSE). This repository ships no model weights or voice
+artifacts; those download from Hugging Face and carry their own licenses.
